@@ -1,7 +1,8 @@
-/* Лёд — дневник питания, сна и состояния. Хоккей вт/пт + игра на выходных. */
+/* RINK — дневник питания, сна и состояния. Хоккей вт/пт + игра на выходных. */
 (function () {
 'use strict';
 
+const APP_NAME = 'RINK';    // название продукта: шапка и имена скачиваемых файлов
 const APP_VERSION = 'v6';   // видно в «Ещё → Данные», чтобы проверить, какая версия загрузилась
 
 /* ============ 1. Утилиты дат ============ */
@@ -1107,7 +1108,7 @@ function bind() {
   document.getElementById('rCopy').onclick = () => copyText(document.getElementById('rOut').textContent);
   document.getElementById('rDl').onclick = () => {
     const f = document.getElementById('rFrom').value, t = document.getElementById('rTo').value;
-    download('dnevnik-' + f + '_' + t + '.md', document.getElementById('rOut').textContent, 'text/markdown;charset=utf-8');
+    download(APP_NAME.toLowerCase() + '-' + f + '_' + t + '.md', document.getElementById('rOut').textContent, 'text/markdown;charset=utf-8');
   };
 
   // настройки
@@ -1121,7 +1122,7 @@ function bind() {
 
   // данные
   document.getElementById('expBtn').onclick = () =>
-    download('dnevnik-' + todayKey() + '.json', JSON.stringify(S, null, 1), 'application/json');
+    download(APP_NAME.toLowerCase() + '-' + todayKey() + '.json', JSON.stringify(S, null, 1), 'application/json');
   document.getElementById('impBtn').onclick = () => document.getElementById('impFile').click();
   document.getElementById('impFile').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
@@ -1165,6 +1166,8 @@ function fillSettings() {
 }
 
 (function init() {
+  const h1 = document.getElementById('appName');
+  if (h1) h1.textContent = APP_NAME;
   loadLocal();
   bind();
   fillSettings();
