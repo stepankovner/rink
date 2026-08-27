@@ -1,7 +1,7 @@
 /* Офлайн-оболочка.
    Обновление: поднять VERSION здесь И номер ?v= у скриптов в index.html. */
-const VERSION = 'rink-v6';
-const SHELL = ['./', './index.html', './app.js?v=6', './recipes.js?v=6',
+const VERSION = 'rink-v7';
+const SHELL = ['./', './index.html', './app.js?v=7', './recipes.js?v=7',
                './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
