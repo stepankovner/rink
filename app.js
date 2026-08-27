@@ -379,7 +379,7 @@ function renderCountdown() {
 
 /* ============ 7. Лента дня ============ */
 /* Цвета продублированы литералами: значения из :root в SVG-атрибуты не подставить. */
-const TL = { axis:'#26333F', hour:'#6B7F90', sleep:'#1F2C38', sleepLine:'#8094A6',
+const TL = { axis:'#26333F', tick:'#5C6E7E', hour:'#6B7F90', sleep:'#1F2C38', sleepLine:'#8094A6',
              muted:'#8094A6', meal:'#F2A93B', red:'#E23B4C', amber:'#F2A93B' };
 
 /* Ширина подписи на глаз: моноширинный шрифт 9px даёт примерно 5.4 px на знак. */
@@ -489,7 +489,7 @@ function renderTimeline(k) {
     const t3 = iceA - 180;
     if (t3 >= T0) {
       const px = x(t3);
-      s += '<line class="tl-t3" data-at="'+fromMin((t3 + 1440) % 1440)+'" x1="'+px.toFixed(1)+'" y1="'+(Y-16)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+16)+'" '
+      s += '<line class="tl-t3" data-at="'+fromMin((t3 + 1440) % 1440)+'" x1="'+px.toFixed(1)+'" y1="'+(Y-10)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+16)+'" '
         +  'stroke="'+TL.red+'" stroke-width="1" stroke-dasharray="3 3"/>';
       push(px, '-3 ч', TL.red);
     }
@@ -499,7 +499,7 @@ function renderTimeline(k) {
   const step = hourStep(T0, T1);
   for (let h = Math.ceil(T0/60/step)*step; h*60 <= T1; h += step) {
     const px = x(h*60);
-    s += '<line x1="'+px.toFixed(1)+'" y1="'+(Y-7)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+7)+'" stroke="'+TL.axis+'" stroke-width="1"/>'
+    s += '<line x1="'+px.toFixed(1)+'" y1="'+(Y-7)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+7)+'" stroke="'+TL.tick+'" stroke-width="1"/>'
       +  '<text class="tl-hour" x="'+px.toFixed(1)+'" y="'+HY+'" fill="'+TL.hour+'" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">'
       +  String(h % 24).padStart(2, '0') + '</text>';
   }
@@ -554,10 +554,10 @@ function renderDay() {
   const k = sel, d = day(k), t = typeOf(k);
 
   document.querySelectorAll('[data-k]').forEach(el => {
-    const f = el.dataset.k;
-    if (f === 'type') { el.value = t; return; }
-    el.value = d[f] == null ? '' : d[f];
+    el.value = d[el.dataset.k] == null ? '' : d[el.dataset.k];
   });
+  renderDayType(k, t);
+  renderWeightDelta(k);
 
   const c = coachFor(k);
   document.getElementById('coachLbl').textContent = fmtLong(k) + ' · ' + c.lbl;
@@ -603,6 +603,42 @@ function updateRulesAside(k) {
   const done = rl.filter(r => d.checks && d.checks[r[0]]).length;
   document.getElementById('rulesAside').textContent = done + ' из ' + rl.length;
 }
+const DAY_TYPES = [['rest','Обычный'], ['ice','Лёд'], ['game','Игра']];
+// Тот же паттерн, что у оценки 1–5: три кнопки в ряд вместо системного колеса выбора.
+function renderDayType(k, t) {
+  const w = document.getElementById('dayType');
+  if (!w) return;
+  w.innerHTML = '';
+  DAY_TYPES.forEach(([v, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.v = v; b.textContent = label;
+    if (v === t) b.className = 'on ' + (v === 'rest' ? 't-rest' : 't-ice');
+    b.onclick = () => { day(k).type = v; touch(k, 'type'); renderAll(); };
+    w.appendChild(b);
+  });
+}
+
+/* Насколько сегодняшний вес отличается от среднего за прошедшую неделю. */
+function weightDelta(k) {
+  const cur = num((S.days[k] || {}).weight);
+  if (cur == null) return null;
+  const prev = [];
+  for (let i = 1; i <= 7; i++) {
+    const v = num((S.days[addDays(k, -i)] || {}).weight);
+    if (v != null) prev.push(v);
+  }
+  if (prev.length < 2) return null;          // по одному замеру «за неделю» не считается
+  return cur - prev.reduce((a, b) => a + b, 0) / prev.length;
+}
+function renderWeightDelta(k) {
+  const el = document.getElementById('wDelta');
+  if (!el) return;
+  const d = weightDelta(k);
+  if (d == null) { el.textContent = ''; el.className = 'delta'; return; }
+  el.textContent = (d > 0 ? '+' : '\u2212') + Math.abs(d).toFixed(1).replace('.', ',') + ' кг за неделю';
+  el.className = 'delta ' + (d > 0 ? 'up' : 'down');
+}
+
 function rate(id, val, cb) {
   const w = document.getElementById(id); w.innerHTML = '';
   for (let i = 1; i <= 5; i++) {
@@ -637,6 +673,12 @@ function renderMeals(k) {
   });
   const tot = meals.reduce((s,m) => s + (m.p||0), 0);
   document.getElementById('proteinAside').textContent = tot ? ('белок ≈ '+tot+' г из 130–160') : '';
+  // Полоса до верхней границы цели. Зелёная с нижней границы, красного нет: это не наказание.
+  const bar = document.getElementById('proteinBar');
+  if (bar) {
+    bar.classList.toggle('ok', tot >= 130);
+    bar.querySelector('i').style.width = Math.min(100, Math.round(tot / 160 * 100)) + '%';
+  }
 }
 function addMeal(recipe, name, prot) {
   const d = day(sel);
@@ -1178,15 +1220,14 @@ function bind() {
     const isNum = el.classList.contains('num') || el.type === 'number';
     const write = () => {
       const d = day(sel);
-      if (f === 'type') { d.type = el.value; touch(sel, 'type'); renderAll(); return true; }
       d[f] = isNum ? dec(el.value) : el.value;
       touch(sel, f);
-      return false;
     };
-    el.addEventListener('input', () => { if (!write()) renderWeek(); });
+    el.addEventListener('input', () => { write(); renderWeek(); });
     el.addEventListener('change', () => {
-      if (write()) return;
+      write();
       if (isNum) el.value = day(sel)[f];                     // 79,4 показываем как 79.4
+      if (f === 'weight') renderWeightDelta(sel);
       if (f === 'bed' || f === 'wake' || f === 'start') renderDay();
       renderWeek();
     });
