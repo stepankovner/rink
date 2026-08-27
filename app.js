@@ -16,7 +16,10 @@ const monday = d => { const x = new Date(d); x.setDate(x.getDate()-((x.getDay()+
 const toMin = t => { if(!t) return null; const p = t.split(':'); return +p[0]*60 + +p[1]; };
 const fromMin = m => String(Math.floor(m/60)%24).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
 const hm = m => Math.floor(m/60)+' ч '+String(m%60).padStart(2,'0')+' мин';
-const num = v => (v===''||v==null||isNaN(+v)) ? null : +v;
+const num = v => { if (v===''||v==null) return null; const x = +String(v).replace(',','.'); return isNaN(x) ? null : x; };
+const dec = v => String(v==null?'':v).replace(',','.').replace(/[^0-9.\-]/g,'');
+// «Сегодня» до 04:00 — это ещё вчерашний день: лёд заканчивается в 23:45, а ест он в час ночи.
+function todayKey() { const d = new Date(); if (d.getHours() < 4) d.setDate(d.getDate()-1); return iso(d); }
 
 /* ============ 2. Состояние и хранилище ============ */
 const LS = 'rink-v1', LS_AUTH = 'rink-auth', LS_DIRTY = 'rink-dirty', LS_PULL = 'rink-pull';
@@ -28,7 +31,7 @@ const store = {
 const DEF_CFG = { kcal:false, whoop:true, ice:{'2':'22:30','5':'21:00'}, u:0 };
 
 let S = { days:{}, waist:[], cfg:Object.assign({},DEF_CFG) };
-let sel = iso(new Date());
+let sel = todayKey();
 let anchor = new Date();
 let dirty = new Set();
 
@@ -66,8 +69,11 @@ function typeOf(k) {
   return 'rest';
 }
 function iceTime(k) {
-  const w = parse(k).getDay();
-  return S.cfg.ice[String(w)] || (typeOf(k)==='game' ? null : null);
+  const d = S.days[k];
+  if (d && d.start) return d.start;
+  const t = typeOf(k);
+  if (t === 'game') return null;              // время игры плавает, берётся только из дня
+  return S.cfg.ice[String(parse(k).getDay())] || null;
 }
 
 /* ============ 3. Синхронизация с Supabase ============ */
@@ -91,14 +97,16 @@ async function sbFetch(path, opts, retry) {
   }
   return r;
 }
+let authBroken = false;
 async function refresh() {
   try {
     const r = await fetch(AUTH.url.replace(/\/$/,'') + '/auth/v1/token?grant_type=refresh_token', {
       method:'POST', headers:{ 'apikey':AUTH.key, 'Content-Type':'application/json' },
       body: JSON.stringify({ refresh_token: AUTH.refresh })
     });
-    if (!r.ok) return false;
+    if (!r.ok) { authBroken = true; return false; }
     const j = await r.json();
+    authBroken = false;
     AUTH.access = j.access_token; AUTH.refresh = j.refresh_token;
     store.set(LS_AUTH, JSON.stringify(AUTH));
     return true;
@@ -124,17 +132,31 @@ function uidFromToken() {
   } catch (e) { return null; }
 }
 function records(keys) {
-  return [...keys].map(mk => {
+  return [...keys].filter(mk => {
+    // Пустую заготовку дня отправлять нельзя: на сервере она затрёт живую запись.
+    // Заготовка отличается тем, что её никто не трогал — у неё нет метки времени.
+    if (!mk.startsWith('day:')) return true;
+    const k = mk.slice(4), d = S.days[k];
+    if (!d) return true;                       // день удалён — уйдёт тумбстоун
+    return hasData(k) || !!d.u;                // очищенный вручную день тоже уйдёт тумбстоуном
+  }).map(mk => {
     const [kind, key] = [mk.slice(0, mk.indexOf(':')), mk.slice(mk.indexOf(':')+1)];
     let payload = null;
-    if (kind === 'day')   payload = S.days[key] || null;
+    if (kind === 'day')   payload = (S.days[key] && hasData(key)) ? S.days[key] : null;
     if (kind === 'waist') payload = S.waist.find(w => w.d === key) || null;
     if (kind === 'cfg')   payload = S.cfg;
     const uid = uidFromToken();
-    const row = { kind, key, payload: payload || { deleted:true, u:Date.now() } };
+    const fallbackU = (kind === 'day' && S.days[key] && S.days[key].u) || Date.now();
+    const row = { kind, key, payload: payload || { deleted:true, u: fallbackU } };
     if (uid) row.user_id = uid;
     return row;
   });
+}
+function pushEverything() {
+  Object.keys(S.days).filter(hasData).forEach(k => dirty.add('day:'+k));
+  S.waist.forEach(w => dirty.add('waist:'+w.d));
+  dirty.add('cfg:main');
+  store.set(LS_DIRTY, JSON.stringify([...dirty]));
 }
 let syncT = null, syncing = false;
 function scheduleSync() { clearTimeout(syncT); syncT = setTimeout(syncNow, 2500); }
@@ -145,6 +167,8 @@ async function syncNow(silent) {
   try {
     if (dirty.size) {
       const rows = records(dirty);
+      if (!rows.length) { dirty.clear(); store.set(LS_DIRTY, '[]'); }
+      else {
       const r = await sbFetch('/rest/v1/entries?on_conflict=user_id,kind,key', {
         method:'POST',
         headers:{ 'Prefer':'resolution=merge-duplicates,return=minimal' },
@@ -152,6 +176,7 @@ async function syncNow(silent) {
       });
       if (!r.ok) throw new Error('push ' + r.status + ' ' + (await r.text()).slice(0,120));
       dirty.clear(); store.set(LS_DIRTY, '[]');
+      }
     }
     const since = store.get(LS_PULL) || '1970-01-01T00:00:00Z';
     const r2 = await sbFetch('/rest/v1/entries?select=kind,key,payload,updated_at&updated_at=gt.' + encodeURIComponent(since) + '&order=updated_at.asc', { method:'GET' });
@@ -185,8 +210,8 @@ async function syncNow(silent) {
     }
     badge('синхронизировано','ok');
   } catch (e) {
-    badge('не синхронизировано','err');
-    if (!silent) toast('Синхронизация не прошла, данные на месте');
+    badge(authBroken ? 'нужен вход' : 'не синхронизировано','err');
+    if (!silent) toast(authBroken ? 'Сессия истекла — войди заново в разделе «Ещё»' : 'Синхронизация не прошла, данные на месте');
   }
   syncing = false;
 }
@@ -203,7 +228,7 @@ function toast(m) {
 function renderWeek() {
   const mon = monday(anchor), wrap = document.getElementById('week');
   wrap.innerHTML = '';
-  const today = iso(new Date());
+  const today = todayKey();
   for (let i = 0; i < 7; i++) {
     const d = new Date(mon); d.setDate(mon.getDate()+i);
     const k = iso(d), t = typeOf(k);
@@ -227,7 +252,12 @@ function coachFor(k) {
       ': белок и крупа, мало жира и клетчатки. За час до выхода банан. Углеводы сегодня не режь. После льда обязательно поесть — творог, кефир или протеин.' };
   }
   if (t === 'game') {
-    return { lbl:'День игры', tx:'Завтрак углеводный. Последняя полноценная еда за 3–3,5 часа до свистка, за час — банан без жира. Между периодами вода. После игры поесть в течение часа: белок плюс углеводы.' };
+    if (tm) {
+      const st = toMin(tm);
+      return { lbl:'День игры', tx:'Свисток в '+tm+'. Последняя полноценная еда — до '+fromMin((st-195+1440)%1440)+
+        ', углеводная и без жира. За час до выхода банан. Между периодами вода. После игры поесть в течение часа: белок плюс углеводы.' };
+    }
+    return { lbl:'День игры', tx:'Поставь время начала в карточке «Лёд» — тогда подскажу, до скольки есть. Общее правило: последняя полноценная еда за 3–3,5 часа до свистка, за час банан без жира, после игры поесть в течение часа.' };
   }
   const yest = typeOf(addDays(k,-1)), tom = typeOf(addDays(k,1));
   if (yest === 'game') return { lbl:'После игры', tx:'Сегодня еду не режь, дай восстановиться. Белок в каждый приём, вода, спать пораньше. Дефицит вернёшь завтра.' };
@@ -251,9 +281,9 @@ function renderTimeline(k) {
   s += '<line x1="'+L+'" y1="'+Y+'" x2="'+R+'" y2="'+Y+'" stroke="#26333F" stroke-width="2" stroke-linecap="round"/>';
 
   let iceA = null, iceB = null;
-  if ((t==='ice') && tm) { iceA = norm(toMin(tm)); iceB = iceA + 75;
+  if ((t==='ice' || t==='game') && tm) { iceA = norm(toMin(tm)); iceB = iceA + (t==='game' ? 105 : 75);
     s += '<rect x="'+x(iceA)+'" y="'+(Y-6)+'" width="'+Math.max(4,(x(iceB)-x(iceA)))+'" height="12" rx="3" fill="#E23B4C"/>'
-      +  '<text x="'+x(iceA)+'" y="'+(Y-13)+'" fill="#E23B4C" font-size="9.5" font-family="ui-monospace,monospace">лёд</text>';
+      +  '<text x="'+x(iceA)+'" y="'+(Y-13)+'" fill="#E23B4C" font-size="9.5" font-family="ui-monospace,monospace">'+(t==='game'?'игра':'лёд')+'</text>';
   }
   if (d.wake) { const px = x(norm(toMin(d.wake)));
     s += '<line x1="'+px+'" y1="'+(Y-14)+'" x2="'+px+'" y2="'+(Y+8)+'" stroke="#8094A6" stroke-width="1.5" stroke-dasharray="2 2"/>'; }
@@ -375,7 +405,7 @@ function addMeal(recipe, name, prot) {
   const d = day(sel);
   d.meals = d.meals || [];
   const now = new Date();
-  d.meals.push({ t: String(now.getHours()).padStart(2,'0')+':'+String(Math.round(now.getMinutes()/5)*5%60).padStart(2,'0'),
+  d.meals.push({ t: String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'),
                  id: recipe ? recipe.id : null, n: name, p: prot || 0 });
   touch(sel); renderMeals(sel); renderTimeline(sel); renderWeek();
 }
@@ -393,14 +423,19 @@ function mealPicker() {
     const s = document.createElement('div'); s.className = 'search';
     s.innerHTML = '<input type="text" placeholder="Найти блюдо">';
     box.appendChild(s);
-    const own = document.createElement('div'); own.className = 'addrow'; own.style.marginTop = '0';
-    own.innerHTML = '<button class="btn">Записать своими словами</button>';
-    own.querySelector('button').onclick = () => {
-      const t = prompt('Что ел?'); if (!t) return;
-      const p = prompt('Сколько примерно белка, г? Можно пропустить.');
-      addMeal(null, t, num(p) || 0); closeModal();
-    };
+    const own = document.createElement('div');
+    own.innerHTML = '<div class="grid2" style="margin-bottom:9px">'
+      + '<div class="f" style="grid-column:1 / -1"><span>Или своими словами</span><input type="text" id="ownName" placeholder="Например, шаурма"></div>'
+      + '<div class="f"><span>Белок, г</span><input type="text" inputmode="numeric" class="num" id="ownProt" placeholder="можно пропустить"></div>'
+      + '<div class="f" style="align-self:end"><button class="btn" id="ownAdd" style="width:100%">Записать</button></div>'
+      + '</div>';
     box.appendChild(own);
+    own.querySelector('#ownAdd').onclick = () => {
+      const t = own.querySelector('#ownName').value.trim();
+      if (!t) { toast('Напиши, что ел'); return; }
+      addMeal(null, t, Math.round(num(own.querySelector('#ownProt').value) || 0));
+      closeModal(); toast('Добавлено');
+    };
     const list = document.createElement('div'); box.appendChild(list);
     const draw = q => {
       list.innerHTML = '';
@@ -545,7 +580,7 @@ function suggest() {
 function series(days, pick) {
   return days.map(k => ({ k, v: pick(S.days[k] || {}) })).filter(x => x.v != null);
 }
-function lastDays(n) { const out = []; for (let i = n-1; i >= 0; i--) out.push(addDays(iso(new Date()), -i)); return out; }
+function lastDays(n) { const out = []; const t = todayKey(); for (let i = n-1; i >= 0; i--) out.push(addDays(t, -i)); return out; }
 function ma(arr, w) {
   return arr.map((_, i) => {
     const from = Math.max(0, i-w+1), part = arr.slice(from, i+1);
@@ -736,7 +771,7 @@ function renderPeriodChips() {
   PERIODS.forEach(([label, back]) => {
     const b = document.createElement('button'); b.className = 'chip'; b.textContent = label;
     b.onclick = () => {
-      const t = iso(new Date());
+      const t = todayKey();
       document.getElementById('rTo').value = t;
       document.getElementById('rFrom').value = addDays(t, -back);
       w.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
@@ -769,10 +804,20 @@ async function copyText(t) {
 function renderSync() {
   const box = document.getElementById('syncBox');
   if (AUTH && AUTH.access) {
-    box.innerHTML = '<div class="calc">Вход выполнен: <b>'+AUTH.email+'</b></div>'
+    box.innerHTML = (authBroken ? '<div class="calc" style="color:#E23B4C">Сессия истекла. Нажми «Выйти» и подключись заново — записи на устройстве не пострадают.</div>' : '')
+      + '<div class="calc">Вход выполнен: <b>'+AUTH.email+'</b></div>'
       + '<div class="addrow"><button class="btn primary" id="sNow">Синхронизировать сейчас</button><button class="btn" id="sOut">Выйти</button></div>'
-      + '<div class="note">Записи уходят на сервер автоматически через пару секунд после изменения и подтягиваются при открытии приложения. Без интернета всё продолжает работать локально.</div>';
+      + '<div class="addrow"><button class="btn" id="sAll">Отправить всё с этого устройства</button></div>'
+      + '<div class="note">Записи уходят на сервер автоматически через пару секунд после изменения и подтягиваются при открытии приложения. Без интернета всё продолжает работать локально.<br><br>«Отправить всё» нужна редко: когда на сервере оказалась версия хуже, чем на этом устройстве. Она перезапишет серверные записи местными.</div>';
     document.getElementById('sNow').onclick = () => syncNow();
+    document.getElementById('sAll').onclick = async () => {
+      if (!confirm('Отправить все записи с этого устройства на сервер? Серверные версии этих дней будут заменены.')) return;
+      Object.keys(S.days).filter(hasData).forEach(k => { S.days[k].u = Date.now(); });
+      S.waist.forEach(w => { w.u = Date.now(); });
+      S.cfg.u = Date.now();
+      pushEverything(); store.set(LS, JSON.stringify(S));
+      await syncNow(); toast('Отправлено');
+    };
     document.getElementById('sOut').onclick = () => { if (confirm('Выйти? Записи на устройстве останутся.')) { logout(); renderSync(); badge('только на устройстве',''); } };
     return;
   }
@@ -791,10 +836,7 @@ function renderSync() {
     if (!url || !key || !mail || !pw) { toast('Заполни все четыре поля'); return; }
     try {
       await login(url, key, mail, pw);
-      Object.keys(S.days).forEach(k => dirty.add('day:'+k));
-      S.waist.forEach(w => dirty.add('waist:'+w.d));
-      dirty.add('cfg:main');
-      store.set(LS_DIRTY, JSON.stringify([...dirty]));
+      pushEverything();
       renderSync(); toast('Подключено');
       await syncNow(true);
     } catch (e) { toast(e.message); }
@@ -808,16 +850,21 @@ function bind() {
   // поля дня
   document.querySelectorAll('[data-k]').forEach(el => {
     const f = el.dataset.k;
-    const handler = () => {
+    const isNum = el.classList.contains('num') || el.type === 'number';
+    const write = () => {
       const d = day(sel);
-      if (f === 'type') { d.type = el.value; touch(sel); renderAll(); return; }
-      d[f] = el.type === 'number' ? (el.value === '' ? '' : el.value) : el.value;
+      if (f === 'type') { d.type = el.value; touch(sel); renderAll(); return true; }
+      d[f] = isNum ? dec(el.value) : el.value;
       touch(sel);
-      if (f === 'bed' || f === 'wake') { renderDay(); }
-      renderWeek();
+      return false;
     };
-    el.addEventListener('change', handler);
-    if (el.tagName === 'TEXTAREA' || el.type === 'text') el.addEventListener('input', () => { day(sel)[f] = el.value; touch(sel); });
+    el.addEventListener('input', () => { if (!write()) renderWeek(); });
+    el.addEventListener('change', () => {
+      if (write()) return;
+      if (isNum) el.value = day(sel)[f];                     // 79,4 показываем как 79.4
+      if (f === 'bed' || f === 'wake' || f === 'start') renderDay();
+      renderWeek();
+    });
   });
 
   document.getElementById('prevW').onclick = () => { anchor.setDate(anchor.getDate()-7); renderWeek(); };
@@ -875,7 +922,7 @@ function bind() {
 
   // данные
   document.getElementById('expBtn').onclick = () =>
-    download('dnevnik-' + iso(new Date()) + '.json', JSON.stringify(S, null, 1), 'application/json');
+    download('dnevnik-' + todayKey() + '.json', JSON.stringify(S, null, 1), 'application/json');
   document.getElementById('impBtn').onclick = () => document.getElementById('impFile').click();
   document.getElementById('impFile').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
@@ -886,9 +933,7 @@ function bind() {
         if (!j.days) throw new Error();
         if (!confirm('Заменить текущие записи содержимым файла?')) return;
         S = { days: j.days || {}, waist: j.waist || [], cfg: Object.assign({}, DEF_CFG, j.cfg || {}) };
-        Object.keys(S.days).forEach(k => dirty.add('day:'+k));
-        S.waist.forEach(w => dirty.add('waist:'+w.d));
-        store.set(LS_DIRTY, JSON.stringify([...dirty]));
+        pushEverything();
         saveLocal(); renderAll(); fillSettings(); toast('Загружено');
       } catch (err) { toast('Файл не подошёл'); }
     };
@@ -897,7 +942,7 @@ function bind() {
   };
   document.getElementById('wipeBtn').onclick = () => {
     if (!confirm('Удалить все записи на этом устройстве? Отменить будет нельзя.')) return;
-    Object.keys(S.days).forEach(k => dirty.add('day:'+k));
+    Object.keys(S.days).filter(hasData).forEach(k => dirty.add('day:'+k));
     S.waist.forEach(w => dirty.add('waist:'+w.d));
     S = { days:{}, waist:[], cfg:Object.assign({}, DEF_CFG) };
     store.set(LS_DIRTY, JSON.stringify([...dirty]));
@@ -920,14 +965,20 @@ function fillSettings() {
   fillSettings();
   renderChips(); renderFood(); renderGuide();
   renderPeriodChips();
-  const t = iso(new Date());
+  const t = todayKey();
   document.getElementById('wDate').value = t;
   document.getElementById('rTo').value = t;
   document.getElementById('rFrom').value = addDays(t, -6);
   renderAll();
   refreshReport();
   if (AUTH && AUTH.access) { badge('синхронизировано','ok'); syncNow(true); }
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return; reloaded = true; location.reload();   // подхватить новую версию сразу
+    });
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 })();
 
 })();

@@ -1,5 +1,5 @@
 /* Офлайн-оболочка. Меняй VERSION при обновлении файлов — иначе браузер отдаст старое. */
-const VERSION = 'rink-v1';
+const VERSION = 'rink-v3';
 const SHELL = ['./', './index.html', './app.js', './recipes.js', './manifest.webmanifest',
                './icon-180.png', './icon-192.png', './icon-512.png'];
 
