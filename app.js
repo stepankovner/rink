@@ -340,47 +340,159 @@ function coachFor(k) {
 }
 
 /* ============ 7. Лента дня ============ */
-function renderTimeline(k) {
-  const d = S.days[k] || {}, t = typeOf(k), tm = iceTime(k);
-  const W = 600, H = 66, L = 8, R = W - 8, Y = 42;
-  const T0 = 6*60, T1 = 27*60;                       // 06:00 → 03:00
-  const x = m => L + (R-L) * Math.min(1, Math.max(0, (m - T0) / (T1 - T0)));
-  const norm = m => m < T0 ? m + 1440 : m;
-  let s = '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" aria-hidden="true">';
-  for (let h = 6; h <= 27; h += 3) {
-    const px = x(h*60);
-    s += '<line x1="'+px+'" y1="'+(Y-7)+'" x2="'+px+'" y2="'+(Y+7)+'" stroke="#26333F" stroke-width="1"/>';
-    s += '<text x="'+px+'" y="'+(Y+22)+'" fill="#5C6E7E" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">'+String(h%24).padStart(2,'0')+'</text>';
-  }
-  s += '<line x1="'+L+'" y1="'+Y+'" x2="'+R+'" y2="'+Y+'" stroke="#26333F" stroke-width="2" stroke-linecap="round"/>';
+/* Цвета продублированы литералами: значения из :root в SVG-атрибуты не подставить. */
+const TL = { axis:'#26333F', hour:'#6B7F90', sleep:'#1F2C38', sleepLine:'#8094A6',
+             muted:'#8094A6', meal:'#F2A93B', red:'#E23B4C', amber:'#F2A93B' };
 
-  let iceA = null, iceB = null;
-  if ((t==='ice' || t==='game') && tm) { iceA = norm(toMin(tm)); iceB = iceA + (t==='game' ? 105 : 75);
-    s += '<rect x="'+x(iceA)+'" y="'+(Y-6)+'" width="'+Math.max(4,(x(iceB)-x(iceA)))+'" height="12" rx="3" fill="#E23B4C"/>'
-      +  '<text x="'+x(iceA)+'" y="'+(Y-13)+'" fill="#E23B4C" font-size="9.5" font-family="ui-monospace,monospace">'+(t==='game'?'игра':'лёд')+'</text>';
+/* Ширина подписи на глаз: моноширинный шрифт 9px даёт примерно 5.4 px на знак. */
+const labW = t => String(t).length * 5.4;
+
+/* Раскладка подписей по двум строкам.
+   На входе {x — центр, text, color}, на выходе то же плюс row: 0 — строка у оси, 1 — над ней.
+   Подпись, которой не хватило места ни в одной строке, не рисуется вовсе. */
+function layoutLabels(items, gap) {
+  if (gap == null) gap = 4;
+  const edge = [-Infinity, -Infinity], out = [];
+  items.slice().sort((a, b) => a.x - b.x).forEach(it => {
+    const w = labW(it.text), left = it.x - w/2, right = it.x + w/2;
+    for (let r = 0; r < 2; r++) {
+      if (left >= edge[r] + gap) { edge[r] = right; out.push(Object.assign({}, it, { row:r })); return; }
+    }
+  });
+  return out;
+}
+
+/* Точки ближе min пикселей разводим минимальным сдвигом, порядок сохраняем. */
+function spreadPoints(xs, min, lo, hi) {
+  const out = xs.slice(), n = out.length;
+  for (let i = 1; i < n; i++) if (out[i] - out[i-1] < min) out[i] = out[i-1] + min;
+  if (n && out[n-1] > hi) {
+    out[n-1] = hi;
+    for (let i = n-2; i >= 0; i--) if (out[i+1] - out[i] < min) out[i] = out[i+1] - min;
   }
+  if (n && out[0] < lo) {
+    out[0] = lo;
+    for (let i = 1; i < n; i++) if (out[i] - out[i-1] < min) out[i] = out[i-1] + min;
+  }
+  return out;
+}
+
+/* Шаг подписей часов подбираем так, чтобы их вышло 6–8. */
+function hourStep(t0, t1) {
+  const opts = [1, 2, 3, 4, 6];
+  for (let i = 0; i < opts.length; i++) {
+    const s = opts[i];
+    const n = Math.floor(t1/60/s) - Math.ceil(t0/60/s) + 1;
+    if (n <= 8) return s;
+  }
+  return 6;
+}
+
+const shortT = t => String(t || '').replace(/^0/, '');
+
+function renderTimeline(k) {
+  const host = document.getElementById('tl');
+  if (!host) return;
+  const d = S.days[k] || {}, t = typeOf(k), tm = iceTime(k);
+  // Сутки в приложении начинаются в 04:00 (см. todayKey), поэтому ночь уезжает вправо.
+  const norm = m => m < 240 ? m + 1440 : m;
+
+  const meals = (d.meals || []).filter(m => m.t).slice()
+    .sort((a, b) => norm(toMin(a.t)) - norm(toMin(b.t)));
+  const ev = [];
+  if (d.wake) ev.push(norm(toMin(d.wake)));
+  meals.forEach(m => ev.push(norm(toMin(m.t))));
+  let iceA = null, iceB = null;
+  if ((t === 'ice' || t === 'game') && tm) {
+    iceA = norm(toMin(tm));
+    iceB = iceA + (t === 'game' ? 105 : 75);
+    ev.push(iceA, iceB);
+  }
+  if (!ev.length) {
+    host.innerHTML = '<div class="tl-empty">Заполни утро и приёмы пищи — здесь появится лента дня</div>';
+    return;
+  }
+
+  // Виден только тот кусок суток, где что-то происходит, но не уже 06:00–22:00.
+  const T0 = Math.max(240, Math.min(6*60, Math.min.apply(null, ev) - 60));
+  const T1 = Math.min(240 + 1440, Math.max(22*60, Math.max.apply(null, ev) + 60));
+
+  // Ширину берём фактическую, чтобы 1 единица viewBox равнялась пикселю: иначе
+  // подписи растянет вместе с картинкой и оценка ширины перестанет работать.
+  const W = Math.round(host.clientWidth) || 600;
+  const H = 96, L = 8, R = W - 8, Y = 54, ROW = [40, 27], HY = Y + 22;
+  const x = m => L + (R-L) * Math.min(1, Math.max(0, (m - T0) / (T1 - T0)));
+
+  const labels = [];
+  const push = (cx, text, color) => {
+    const half = labW(text) / 2;
+    labels.push({ x: Math.min(R - half, Math.max(L + half, cx)), text, color });
+  };
+
+  let s = '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="Лента дня">';
+
+  // сон: полоса от левого края до подъёма
   if (d.wake) {
     const px = x(norm(toMin(d.wake)));
-    // Сон относится к ночи, которая закончилась этим утром: рисуем его слева, до подъёма.
-    s += '<rect x="'+L+'" y="'+(Y-6)+'" width="'+Math.max(0,(px-L))+'" height="12" rx="3" fill="#1F2C38"/>'
-      +  '<line x1="'+px+'" y1="'+(Y-11)+'" x2="'+px+'" y2="'+(Y+11)+'" stroke="#8094A6" stroke-width="1.5"/>';
+    s += '<rect x="'+L+'" y="'+(Y-6)+'" width="'+Math.max(0, px-L).toFixed(1)+'" height="12" rx="3" fill="'+TL.sleep+'"/>'
+      +  '<line x1="'+px.toFixed(1)+'" y1="'+(Y-11)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+11)+'" stroke="'+TL.sleepLine+'" stroke-width="1.5"/>';
     let lab = 'сон';
-    const bm2 = toMin(d.bed);
-    if (bm2 != null) { let mm = toMin(d.wake) - bm2; if (mm <= 0) mm += 1440; lab = (mm/60).toFixed(1).replace('.',',') + ' ч'; }
-    // Если полоса узкая (встал рано), подпись уезжает правее метки, а не пропадает.
-    const wide = (px - L) > 40;
-    s += '<text x="'+(wide ? L+5 : px+5)+'" y="'+(wide ? Y+4 : Y-13)+'" fill="#8094A6" font-size="9" font-family="ui-monospace,monospace">'+lab+'</text>';
+    const bm = toMin(d.bed);
+    if (bm != null) { let mm = toMin(d.wake) - bm; if (mm <= 0) mm += 1440; lab = (mm/60).toFixed(1).replace('.', ',') + ' ч'; }
+    push((L + px) / 2, lab, TL.muted);
   }
 
-  (d.meals || []).forEach(m => {
-    if (!m.t) return;
-    const mm = norm(toMin(m.t)), px = x(mm);
-    const tooClose = iceA != null && mm < iceA && (iceA - mm) < 180;
-    s += '<circle cx="'+px+'" cy="'+Y+'" r="5.5" fill="'+(tooClose?'#E23B4C':'#F2A93B')+'" stroke="#0B1117" stroke-width="1.5"/>';
-    if (m.p) s += '<text x="'+px+'" y="'+(Y-12)+'" fill="'+(tooClose?'#E23B4C':'#8094A6')+'" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">'+m.p+'</text>';
+  // лёд или игра
+  if (iceA != null) {
+    const a = x(iceA), b = x(iceB);
+    s += '<rect class="tl-ice" x="'+a.toFixed(1)+'" y="'+(Y-6)+'" width="'+Math.max(4, b-a).toFixed(1)+'" height="12" rx="3" fill="'+TL.red+'"/>';
+    push((a + b) / 2, t === 'game' ? 'игра' : 'лёд', TL.red);
+    // Граница, после которой плотно есть уже нельзя. Ради неё лента и нужна.
+    const t3 = iceA - 180;
+    if (t3 >= T0) {
+      const px = x(t3);
+      s += '<line class="tl-t3" data-at="'+fromMin((t3 + 1440) % 1440)+'" x1="'+px.toFixed(1)+'" y1="'+(Y-16)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+16)+'" '
+        +  'stroke="'+TL.red+'" stroke-width="1" stroke-dasharray="3 3"/>';
+      push(px, '-3 ч', TL.red);
+    }
+  }
+
+  // часовая сетка и ось
+  const step = hourStep(T0, T1);
+  for (let h = Math.ceil(T0/60/step)*step; h*60 <= T1; h += step) {
+    const px = x(h*60);
+    s += '<line x1="'+px.toFixed(1)+'" y1="'+(Y-7)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+7)+'" stroke="'+TL.axis+'" stroke-width="1"/>'
+      +  '<text class="tl-hour" x="'+px.toFixed(1)+'" y="'+HY+'" fill="'+TL.hour+'" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">'
+      +  String(h % 24).padStart(2, '0') + '</text>';
+  }
+  s += '<line x1="'+L+'" y1="'+Y+'" x2="'+R+'" y2="'+Y+'" stroke="'+TL.axis+'" stroke-width="2" stroke-linecap="round"/>';
+
+  // метка «сейчас»
+  if (k === todayKey()) {
+    const now = new Date(), nm = norm(now.getHours()*60 + now.getMinutes());
+    if (nm >= T0 && nm <= T1) {
+      const px = x(nm);
+      s += '<line class="tl-now" x1="'+px.toFixed(1)+'" y1="'+(Y-14)+'" x2="'+px.toFixed(1)+'" y2="'+(Y+14)+'" stroke="'+TL.amber+'" stroke-width="1" opacity=".75"/>';
+    }
+  }
+
+  // приёмы пищи
+  const xs = spreadPoints(meals.map(m => x(norm(toMin(m.t)))), 11, L + 6, R - 6);
+  meals.forEach((m, i) => {
+    const mm = norm(toMin(m.t));
+    // Красным — то, что попало в трёхчасовое окно перед льдом, границу считаем включительно.
+    const late = iceA != null && mm <= iceA && (iceA - mm) <= 180;
+    s += '<circle class="tl-meal" data-at="'+m.t+'" cx="'+xs[i].toFixed(1)+'" cy="'+Y+'" r="5.5" fill="'+(late ? TL.red : TL.meal)+'" stroke="#0B1117" stroke-width="1.5"/>';
+    push(xs[i], shortT(m.t), late ? TL.red : TL.muted);
   });
+
+  layoutLabels(labels).forEach(it => {
+    s += '<text class="tl-lab" x="'+it.x.toFixed(1)+'" y="'+ROW[it.row]+'" fill="'+it.color+'" font-size="9" '
+      +  'font-family="ui-monospace,monospace" text-anchor="middle">' + it.text + '</text>';
+  });
+
   s += '</svg>';
-  document.getElementById('tl').innerHTML = s;
+  host.innerHTML = s;
 }
 
 /* ============ 8. Правила ============ */
@@ -1038,6 +1150,10 @@ function bind() {
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNow(true); });
   window.addEventListener('online', () => syncNow(true));
+
+  // Лента считает ширину в пикселях, поэтому при повороте экрана её надо пересобрать.
+  let rsT = null;
+  window.addEventListener('resize', () => { clearTimeout(rsT); rsT = setTimeout(() => renderTimeline(sel), 150); });
 }
 function fillSettings() {
   const v = document.getElementById('verNote');
