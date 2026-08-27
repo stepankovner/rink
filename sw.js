@@ -1,7 +1,8 @@
-/* Офлайн-оболочка. Меняй VERSION при обновлении файлов — иначе браузер отдаст старое. */
-const VERSION = 'rink-v3';
-const SHELL = ['./', './index.html', './app.js', './recipes.js', './manifest.webmanifest',
-               './icon-180.png', './icon-192.png', './icon-512.png'];
+/* Офлайн-оболочка.
+   Обновление: поднять VERSION здесь И номер ?v= у скриптов в index.html. */
+const VERSION = 'rink-v4';
+const SHELL = ['./', './index.html', './app.js?v=4', './recipes.js?v=4',
+               './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -13,15 +14,26 @@ self.addEventListener('activate', e => {
 });
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  // Запросы к базе никогда не кэшируем.
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  e.respondWith(
-    caches.match(e.request).then(hit => {
-      const net = fetch(e.request).then(res => {
-        if (res && res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(e.request, copy)); }
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;   // запросы к базе не трогаем
+
+  // Саму страницу берём из сети, если сеть есть. Иначе обновления не доезжают,
+  // пока браузер не соберётся перепроверить service worker.
+  if (e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request).then(res => {
+        const copy = res.clone();
+        caches.open(VERSION).then(c => c.put('./index.html', copy));
         return res;
-      }).catch(() => hit);
-      return hit || net;
-    })
+      }).catch(() => caches.match('./index.html').then(hit => hit || caches.match('./')))
+    );
+    return;
+  }
+
+  // Остальное — из кэша, оно версионировано через ?v= и меняется вместе с адресом.
+  e.respondWith(
+    caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
+      if (res && res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(e.request, copy)); }
+      return res;
+    }))
   );
 });

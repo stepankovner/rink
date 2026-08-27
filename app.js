@@ -2,6 +2,8 @@
 (function () {
 'use strict';
 
+const APP_VERSION = 'v4';   // видно в «Ещё → Данные», чтобы проверить, какая версия загрузилась
+
 /* ============ 1. Утилиты дат ============ */
 const DOW = ['вс','пн','вт','ср','чт','пт','сб'];
 const MON = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
@@ -953,6 +955,8 @@ function bind() {
   window.addEventListener('online', () => syncNow(true));
 }
 function fillSettings() {
+  const v = document.getElementById('verNote');
+  if (v) v.textContent = 'Версия приложения: ' + APP_VERSION;
   document.getElementById('cfgTue').value = S.cfg.ice['2'] || '22:30';
   document.getElementById('cfgFri').value = S.cfg.ice['5'] || '21:00';
   document.getElementById('cfgWhoop').checked = !!S.cfg.whoop;
