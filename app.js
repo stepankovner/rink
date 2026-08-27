@@ -33,7 +33,7 @@ const store = {
 };
 const DEF_CFG = { kcal:false, whoop:true, ice:{'2':'22:30','5':'21:00'}, u:0 };
 
-let S = { days:{}, waist:[], custom:[], cfg:Object.assign({},DEF_CFG) };
+let S = { days:{}, waist:[], custom:[], shop:[], cfg:Object.assign({},DEF_CFG) };
 let sel = todayKey();
 let anchor = new Date();
 let dirty = new Set();
@@ -46,6 +46,7 @@ function loadLocal() {
   if (!S.days) S.days = {};
   if (!S.waist) S.waist = [];
   if (!S.custom) S.custom = [];
+  if (!S.shop) S.shop = [];
   S.cfg = Object.assign({}, DEF_CFG, S.cfg || {});
   // Записи, сделанные до появления слияния, получают идентификаторы приёмов пищи.
   Object.keys(S.days).forEach(k => {
@@ -821,6 +822,121 @@ function mealPicker() {
   });
 }
 
+/* ---- Повторить другой день ----
+   В понедельник, среду и четверг рацион почти одинаковый. */
+function filledMealDays(from, limit) {
+  const out = [];
+  for (let i = 1; i <= 180 && out.length < limit; i++) {
+    const k = addDays(from, -i), d = S.days[k];
+    if (d && (d.meals || []).length) out.push(k);
+  }
+  return out;
+}
+function copyMealsFrom(from, to) {
+  const src = ((S.days[from] || {}).meals || []).filter(m => m.n);
+  if (!src.length) return 0;
+  const d = day(to), now = Date.now();
+  d.meals = d.meals || [];
+  // Новый id и свежий u обязательны: иначе слияние примет копию за старую запись.
+  src.forEach(m => d.meals.push({ id: mealId(), rid: m.rid || null, u: now, t: m.t, n: m.n, p: m.p || 0 }));
+  touch(to); renderMeals(to); renderTimeline(to); renderWeek();
+  return src.length;
+}
+function copyDayPicker() {
+  const days = filledMealDays(sel, 14);
+  if (!days.length) { toast('Пока нечего повторять'); return; }
+  openModal('Повторить другой день', box => {
+    days.forEach(k => {
+      const d = S.days[k], tot = d.meals.reduce((a, m) => a + (m.p || 0), 0);
+      const names = d.meals.map(m => m.n).filter(Boolean);
+      const el = document.createElement('div'); el.className = 'pick';
+      el.innerHTML = '<div class="grow"><div class="nm"></div><div class="sub"></div></div>'
+        + '<div class="meta">' + d.meals.length + ' шт · ' + tot + ' г</div>';
+      el.querySelector('.nm').textContent = fmtLong(k);
+      el.querySelector('.sub').textContent = names.slice(0, 3).join(', ') + (names.length > 3 ? ' и ещё ' + (names.length - 3) : '');
+      el.onclick = () => { const n = copyMealsFrom(k, sel); closeModal(); toast('Добавлено приёмов: ' + n); };
+      box.appendChild(el);
+    });
+  });
+}
+
+/* ---- Список покупок ----
+   Разбираем строки вида «200 г куриного филе». Что не разобралось, идёт в «прочее»
+   без суммирования: доводить разбор до идеала здесь незачем. */
+const ING_RE = /^(\d+(?:[.,]\d+)?)(?:\s*[–—-]\s*(\d+(?:[.,]\d+)?))?\s*(кг|г|мл|л|шт\.?|ст\.\s*л\.|ч\.\s*л\.)?\s+(.+)$/i;
+function parseIng(line) {
+  const m = String(line).trim().match(ING_RE);
+  if (!m) return null;
+  const q = parseFloat((m[2] || m[1]).replace(',', '.'));      // из диапазона «8–10» берём верх
+  if (!isFinite(q) || q <= 0) return null;
+  const name = m[4].trim();
+  return { q: q, unit: (m[3] || 'шт').replace(/\s+/g, '').toLowerCase(), name: name, key: norm(name) };
+}
+function shopSummary(ids) {
+  const sums = [], byKey = {}, other = [];
+  (ids || []).forEach(id => {
+    const r = RECIPES.find(x => x.id === id);
+    if (!r) return;
+    (r.ing || []).forEach(line => {
+      const p = parseIng(line);
+      if (!p) { if (other.indexOf(line) < 0) other.push(line); return; }
+      const k = p.key + '|' + p.unit;
+      if (byKey[k]) byKey[k].q += p.q;
+      else { byKey[k] = { q:p.q, unit:p.unit, name:p.name }; sums.push(byKey[k]); }
+    });
+  });
+  sums.sort((a, b) => a.name.localeCompare(b.name));
+  return { sums:sums, other:other };
+}
+function shopText(ids) {
+  const r = shopSummary(ids);
+  const fmtQ = q => (Math.round(q * 10) / 10).toString().replace('.', ',');
+  let out = 'Список покупок · блюд: ' + (ids || []).length + '\n\n';
+  out += r.sums.map(x => fmtQ(x.q) + ' ' + x.unit + ' ' + x.name).join('\n');
+  if (r.other.length) out += '\n\nПрочее:\n' + r.other.join('\n');
+  return out;
+}
+function toggleShop(id) {
+  S.shop = S.shop || [];
+  const i = S.shop.indexOf(id);
+  if (i >= 0) S.shop.splice(i, 1); else S.shop.push(id);
+  saveLocal();                       // список живёт только на устройстве, синхронизация не нужна
+  renderShop(); renderFood();
+}
+function renderShop() {
+  const box = document.getElementById('shopBox');
+  if (!box) return;
+  const ids = (S.shop || []).filter(id => RECIPES.some(r => r.id === id));
+  const open = !!openSec['shop'];
+  const sec = document.createElement('div');
+  sec.className = 'sec shop' + (open ? ' open' : '');
+  sec.innerHTML = '<button class="sh">Список покупок<span class="cnt">' + (ids.length || '—') + '</span></button><div class="body"></div>';
+  sec.querySelector('.sh').onclick = () => { openSec['shop'] = !open; renderShop(); };
+  const body = sec.querySelector('.body');
+  if (!ids.length) {
+    body.innerHTML = '<div class="empty">Отметь блюда кнопкой «В список» — здесь соберутся ингредиенты.</div>';
+  } else {
+    const picks = document.createElement('div'); picks.className = 'shop-pick';
+    ids.forEach(id => {
+      const r = RECIPES.find(x => x.id === id);
+      const b = document.createElement('button'); b.className = 'chip on'; b.textContent = r.n + ' ×';
+      b.onclick = () => toggleShop(id);
+      picks.appendChild(b);
+    });
+    body.appendChild(picks);
+    const out = document.createElement('div'); out.className = 'shop-out';
+    out.textContent = shopText(ids);
+    body.appendChild(out);
+    const row = document.createElement('div'); row.className = 'addrow';
+    row.innerHTML = '<button class="btn primary">В буфер</button><button class="btn">Очистить</button>';
+    row.children[0].onclick = () => copyText(shopText(ids));
+    row.children[1].onclick = () => { S.shop = []; saveLocal(); renderShop(); renderFood(); };
+    body.appendChild(row);
+  }
+  box.innerHTML = '';
+  box.appendChild(sec);
+}
+
 /* ============ 12. Экран «Еда» ============ */
 const CHIPS = [
   ['all','Всё',null], ['fast','До 10 минут','fast'], ['protein','35+ г белка','protein'],
@@ -883,19 +999,24 @@ function renderFood() {
 }
 function recipeEl(r) {
   const el = document.createElement('div');
-  el.className = 'item' + (openItem[r.id] ? ' open' : '');
+  el.className = 'item' + (openItem[r.id] ? ' open' : '') + ((S.shop || []).indexOf(r.id) >= 0 ? ' inshop' : '');
   const meta = r.p + ' г · ' + r.t + ' мин' + (r.h && r.h < r.t ? ' (руки ' + r.h + ')' : '');
+  const inShop = (S.shop || []).indexOf(r.id) >= 0;
   el.innerHTML = '<div class="hd"><span class="nm">'+hl(r.n, query)+'</span><span class="meta">'+meta+'</span></div>'
     + '<div class="det">'
     + (r.s ? '<div style="color:#5C6E7E;font-size:12px">'+r.s+' · примерно '+r.k+' ккал</div>' : '<div style="color:#5C6E7E;font-size:12px">Примерно '+r.k+' ккал</div>')
     + '<h4>Нужно</h4><ul>' + (r.ing||[]).map(i => '<li>'+hl(i, query)+'</li>').join('') + '</ul>'
     + '<h4>Как</h4><ol>' + (r.st||[]).map(i => '<li>'+hl(i, query)+'</li>').join('') + '</ol>'
     + (r.tip ? '<div class="tip">'+hl(r.tip, query)+'</div>' : '')
-    + '<div class="adds"><button class="btn sm">Записать в день</button></div>'
+    + '<div class="adds"><button class="btn sm">Записать в день</button>'
+    + '<button class="btn sm shopadd">' + (inShop ? 'Убрать из списка' : 'В список') + '</button></div>'
     + '</div>';
   el.querySelector('.hd').onclick = () => { openItem[r.id] = !openItem[r.id]; renderFood(); };
   el.querySelector('.adds button').onclick = e => {
     e.stopPropagation(); addMeal(r, r.n, r.p); toast('Добавлено в ' + fmtShort(sel));
+  };
+  el.querySelector('.shopadd').onclick = e => {
+    e.stopPropagation(); toggleShop(r.id); toast(inShop ? 'Убрано из списка' : 'В списке покупок');
   };
   return el;
 }
@@ -988,9 +1109,29 @@ function bars(values, opts) {
 function card(title, big, sub, svg) {
   return '<div class="chart"><h3>'+title+'</h3><div class="big">'+big+'</div><div class="sub">'+sub+'</div>'+svg+'</div>';
 }
+/* Сводка недели сверху на «Трендах». Расчёт общий с отчётом, дублировать незачем. */
+function weekSummaryCard() {
+  const st = summarize(lastDays(7));
+  if (!st.filled) return '';
+  const dw = st.weightDelta;
+  const tile = (v, l, cls) => '<div><div class="v'+(cls?' '+cls:'')+'">'+v+'</div><div class="l">'+l+'</div></div>';
+  const sleep = st.sleepAvg == null ? '—' : (st.sleepAvg/60).toFixed(1).replace('.', ',') + ' ч';
+  return '<div class="chart"><h3>Неделя</h3>'
+    + '<div class="sub">заполнено ' + st.filled + ' из 7 дней</div>'
+    + '<div class="sum">'
+    + tile(st.rulesPct == null ? '—' : st.rulesPct + '%', 'правила')
+    + tile(st.protAvg == null ? '—' : st.protAvg + ' г', 'белок')
+    + tile(sleep, 'сон')
+    + tile(st.ice + ' / ' + st.game, 'лёд / игры')
+    + tile(dw == null ? '—' : (dw > 0 ? '+' : '\u2212') + Math.abs(dw).toFixed(1).replace('.', ',') + ' кг',
+           'вес', dw == null ? '' : (dw > 0 ? 'up' : 'down'))
+    + tile(st.p3Avg == null ? '—' : st.p3Avg.toFixed(1), 'третий период')
+    + '</div></div>';
+}
+
 function renderTrends() {
   const wrap = document.getElementById('charts');
-  let out = '';
+  let out = weekSummaryCard();
 
   // вес
   const w60 = series(lastDays(60), d => num(d.weight));
@@ -1070,31 +1211,51 @@ const RULE_NAMES = { r_protein:'белок', r_veg:'овощи', r_liquid:'жи�
   r_post:'после льда', r_water:'вода с солью', r_move:'движение' };
 const TYPE_NAMES = { ice:'лёд', game:'игра', rest:'обычный день' };
 
-function buildReport(from, to) {
-  const keys = [];
-  for (let k = from; k <= to; k = addDays(k,1)) keys.push(k);
-  const filled = keys.filter(hasData);
-  let out = '# Дневник: ' + fmtShort(from) + ' — ' + fmtShort(to) + '\n\n## Сводка\n';
+const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
 
-  const ws = keys.map(k => num((S.days[k]||{}).weight)).filter(v => v != null);
-  out += '- Заполнено дней: ' + filled.length + ' из ' + keys.length + '\n';
-  if (ws.length) out += '- Вес: ' + ws[0].toFixed(1) + ' → ' + ws[ws.length-1].toFixed(1) + ' кг, среднее ' + (ws.reduce((a,b)=>a+b,0)/ws.length).toFixed(1) + '\n';
-  const wa = S.waist.filter(x => x.d >= from && x.d <= to).sort((a,b) => a.d < b.d ? -1 : 1);
-  if (wa.length) out += '- Талия: ' + wa.map(x => x.cm.toFixed(1)).join(' → ') + ' см\n';
+/* Сводка за период. Считается один раз и используется и в отчёте, и на «Трендах». */
+function summarize(keys) {
   const sl = keys.map(k => { const d = S.days[k]||{}; const b = toMin(d.bed), w = toMin(d.wake);
     if (b==null||w==null) return null; let m = w-b; if (m<=0) m+=1440; return m; }).filter(v => v!=null);
-  if (sl.length) out += '- Сон: в среднем ' + hm(Math.round(sl.reduce((a,b)=>a+b,0)/sl.length)) + ' по ' + sl.length + ' ночам\n';
   const pr = keys.map(k => ((S.days[k]||{}).meals||[]).reduce((s,m)=>s+(m.p||0),0)).filter(v => v>0);
-  if (pr.length) out += '- Белок из меню: в среднем ' + Math.round(pr.reduce((a,b)=>a+b,0)/pr.length) + ' г\n';
+  const ws = keys.map(k => num((S.days[k]||{}).weight)).filter(v => v != null);
+  const p3 = keys.map(k => num((S.days[k]||{}).p3)).filter(v => v != null);
   let rd = 0, rt = 0;
   keys.forEach(k => { if (!hasData(k)) return; const rl = rulesFor(k), d = S.days[k]||{};
     rt += rl.length; rd += rl.filter(r => d.checks && d.checks[r[0]]).length; });
-  if (rt) out += '- Правила: ' + Math.round(rd/rt*100) + '% выполнено\n';
-  const ice = keys.filter(k => typeOf(k)==='ice' && hasData(k)).length;
-  const gm  = keys.filter(k => typeOf(k)==='game' && hasData(k)).length;
-  out += '- Лёд: ' + ice + ', игр: ' + gm + '\n';
-  const p3 = keys.map(k => num((S.days[k]||{}).p3)).filter(v => v!=null);
-  if (p3.length) out += '- Третий период: в среднем ' + (p3.reduce((a,b)=>a+b,0)/p3.length).toFixed(1) + ' из 5\n';
+  return {
+    keys: keys,
+    filled: keys.filter(hasData).length,
+    weights: ws,
+    weightAvg: ws.length ? avg(ws) : null,
+    weightDelta: ws.length > 1 ? ws[ws.length-1] - ws[0] : null,
+    sleepNights: sl.length,
+    sleepAvg: sl.length ? Math.round(avg(sl)) : null,
+    protDays: pr.length,
+    protAvg: pr.length ? Math.round(avg(pr)) : null,
+    rulesPct: rt ? Math.round(rd/rt*100) : null,
+    ice: keys.filter(k => typeOf(k)==='ice' && hasData(k)).length,
+    game: keys.filter(k => typeOf(k)==='game' && hasData(k)).length,
+    p3Avg: p3.length ? avg(p3) : null
+  };
+}
+
+function buildReport(from, to) {
+  const keys = [];
+  for (let k = from; k <= to; k = addDays(k,1)) keys.push(k);
+  const st = summarize(keys);
+  let out = '# Дневник: ' + fmtShort(from) + ' — ' + fmtShort(to) + '\n\n## Сводка\n';
+
+  const ws = st.weights;
+  out += '- Заполнено дней: ' + st.filled + ' из ' + keys.length + '\n';
+  if (ws.length) out += '- Вес: ' + ws[0].toFixed(1) + ' → ' + ws[ws.length-1].toFixed(1) + ' кг, среднее ' + st.weightAvg.toFixed(1) + '\n';
+  const wa = S.waist.filter(x => x.d >= from && x.d <= to).sort((a,b) => a.d < b.d ? -1 : 1);
+  if (wa.length) out += '- Талия: ' + wa.map(x => x.cm.toFixed(1)).join(' → ') + ' см\n';
+  if (st.sleepNights) out += '- Сон: в среднем ' + hm(st.sleepAvg) + ' по ' + st.sleepNights + ' ночам\n';
+  if (st.protDays) out += '- Белок из меню: в среднем ' + st.protAvg + ' г\n';
+  if (st.rulesPct != null) out += '- Правила: ' + st.rulesPct + '% выполнено\n';
+  out += '- Лёд: ' + st.ice + ', игр: ' + st.game + '\n';
+  if (st.p3Avg != null) out += '- Третий период: в среднем ' + st.p3Avg.toFixed(1) + ' из 5\n';
 
   out += '\n## По дням\n';
   keys.forEach(k => {
@@ -1236,6 +1397,7 @@ function bind() {
   document.getElementById('prevW').onclick = () => { anchor.setDate(anchor.getDate()-7); renderWeek(); };
   document.getElementById('nextW').onclick = () => { anchor.setDate(anchor.getDate()+7); renderWeek(); };
   document.getElementById('addMeal').onclick = mealPicker;
+  document.getElementById('copyDay').onclick = copyDayPicker;
   document.getElementById('suggestBtn').onclick = suggest;
   document.getElementById('mClose').onclick = closeModal;
   document.getElementById('modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
@@ -1298,7 +1460,7 @@ function bind() {
         const j = JSON.parse(r.result);
         if (!j.days) throw new Error();
         if (!confirm('Заменить текущие записи содержимым файла?')) return;
-        S = { days: j.days || {}, waist: j.waist || [], custom: j.custom || [],
+        S = { days: j.days || {}, waist: j.waist || [], custom: j.custom || [], shop: j.shop || [],
               cfg: Object.assign({}, DEF_CFG, j.cfg || {}) };
         pushEverything();
         saveLocal(); renderAll(); fillSettings(); toast('Загружено');
@@ -1312,7 +1474,7 @@ function bind() {
     Object.keys(S.days).filter(hasData).forEach(k => dirty.add('day:'+k));
     S.waist.forEach(w => dirty.add('waist:'+w.d));
     (S.custom || []).forEach(c => dirty.add('custom:'+c.id));
-    S = { days:{}, waist:[], custom:[], cfg:Object.assign({}, DEF_CFG) };
+    S = { days:{}, waist:[], custom:[], shop:[], cfg:Object.assign({}, DEF_CFG) };
     store.set(LS_DIRTY, JSON.stringify([...dirty]));
     saveLocal(); renderAll(); toast('Удалено');
   };
@@ -1339,7 +1501,7 @@ function fillSettings() {
   loadLocal();
   bind();
   fillSettings();
-  renderChips(); renderFood(); renderGuide();
+  renderChips(); renderShop(); renderFood(); renderGuide();
   renderPeriodChips();
   const t = todayKey();
   document.getElementById('wDate').value = t;

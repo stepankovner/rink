@@ -207,7 +207,8 @@ input.big{font-size:var(--f5);min-height:56px;text-align:center;letter-spacing:.
 .item .det ul,.item .det ol{margin:0;padding-left:18px}
 .item .det li{margin-bottom:var(--s1);line-height:1.45}
 .item .det .tip{margin-top:var(--s3);padding:var(--s3);background:var(--panel2);border-radius:9px;border-left:2px solid var(--blue);font-size:var(--f3);color:#A9BCCB}
-.item .det .adds{display:flex;gap:var(--s2);margin-top:var(--s3)}
+.item .det .adds{display:flex;gap:var(--s2);margin-top:var(--s3);flex-wrap:wrap}
+.item.inshop .nm::after{content:" •";color:var(--green)}
 mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:0 2px}
 .gitem{border-top:1px solid var(--edge);padding:var(--s3) 0}
 .gitem .nm{font-size:var(--f3);font-weight:500;margin-bottom:3px}
@@ -231,7 +232,9 @@ mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:
 .sheet .sh-body{overflow-y:auto;padding:var(--s4) var(--s4) 18px;-webkit-overflow-scrolling:touch}
 .pick{display:flex;justify-content:space-between;align-items:center;gap:var(--s3);padding:var(--s3) 0;border-top:1px solid var(--edge);cursor:pointer}
 .pick:first-child{border-top:0}
+.pick .grow{min-width:0;flex:1}
 .pick .nm{font-size:var(--f4)}
+.pick .sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pick .sub{font-size:var(--f1);color:var(--dim);margin-top:2px}
 .pick .meta{font-family:var(--mono);font-size:var(--f1);color:var(--muted);flex:0 0 auto}
 .pickhd{font-family:var(--display);font-size:var(--f1);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:var(--s2)}
@@ -253,6 +256,7 @@ mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:
 .sum div{background:var(--panel2);border-radius:10px;padding:var(--s3)}
 .sum .v{font-family:var(--mono);font-size:18px;line-height:1.2}
 .sum .l{font-family:var(--display);font-size:var(--f1);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-top:var(--s1)}
+.sum .v.up{color:var(--red)} .sum .v.down{color:var(--green)}
 .tbl{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:var(--f3)}
 .tbl th{font-family:var(--display);font-size:var(--f1);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:5px 0;font-weight:500}
 .tbl td{padding:7px 0;border-top:1px solid var(--edge)}
@@ -342,6 +346,9 @@ mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:
       <div class="addrow">
         <button class="btn primary" id="addMeal">Добавить приём пищи</button>
       </div>
+      <div class="addrow">
+        <button class="btn" id="copyDay">Повторить другой день</button>
+      </div>
     </div>
 
     <div class="card" id="iceCard">
@@ -378,6 +385,7 @@ mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:
     <div class="addrow" style="margin:0 0 var(--s3)">
       <button class="btn" id="suggestBtn">Что съесть сейчас</button>
     </div>
+    <div id="shopBox"></div>
     <div id="foodList"></div>
     <h3 class="sectitle">Справочник</h3>
     <div id="guideList"></div>
