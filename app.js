@@ -33,7 +33,7 @@ const store = {
 };
 const DEF_CFG = { kcal:false, whoop:true, ice:{'2':'22:30','5':'21:00'}, u:0 };
 
-let S = { days:{}, waist:[], cfg:Object.assign({},DEF_CFG) };
+let S = { days:{}, waist:[], custom:[], cfg:Object.assign({},DEF_CFG) };
 let sel = todayKey();
 let anchor = new Date();
 let dirty = new Set();
@@ -45,6 +45,7 @@ function loadLocal() {
   } catch (e) { /* первый запуск */ }
   if (!S.days) S.days = {};
   if (!S.waist) S.waist = [];
+  if (!S.custom) S.custom = [];
   S.cfg = Object.assign({}, DEF_CFG, S.cfg || {});
   // Записи, сделанные до появления слияния, получают идентификаторы приёмов пищи.
   Object.keys(S.days).forEach(k => {
@@ -210,6 +211,7 @@ function records(keys) {
     if (kind === 'day')   payload = (S.days[key] && hasData(key)) ? S.days[key] : null;
     if (kind === 'waist') payload = S.waist.find(w => w.d === key) || null;
     if (kind === 'cfg')   payload = S.cfg;
+    if (kind === 'custom') payload = (S.custom || []).find(c => c.id === key) || null;
     const uid = uidFromToken();
     const fallbackU = (kind === 'day' && S.days[key] && S.days[key].u) || Date.now();
     const row = { kind, key, payload: payload || { deleted:true, u: fallbackU } };
@@ -220,6 +222,7 @@ function records(keys) {
 function pushEverything() {
   Object.keys(S.days).filter(hasData).forEach(k => dirty.add('day:'+k));
   S.waist.forEach(w => dirty.add('waist:'+w.d));
+  (S.custom || []).forEach(c => dirty.add('custom:'+c.id));
   dirty.add('cfg:main');
   store.set(LS_DIRTY, JSON.stringify([...dirty]));
 }
@@ -268,6 +271,15 @@ async function syncNow(silent) {
         if (!cur || (p.u || 0) > (cur.u || 0)) {
           if (p.deleted) { if (i >= 0) S.waist.splice(i,1); }
           else if (i >= 0) S.waist[i] = p; else S.waist.push(p);
+          changed = true;
+        }
+      } else if (row.kind === 'custom') {
+        S.custom = S.custom || [];
+        const i = S.custom.findIndex(c => c.id === row.key);
+        const cur = i >= 0 ? S.custom[i] : null;
+        if (!cur || (p.u || 0) > (cur.u || 0)) {
+          // Удалённое своё блюдо остаётся тумбстоуном: иначе оно вернётся со второго устройства.
+          if (i >= 0) S.custom[i] = p; else S.custom.push(p);
           changed = true;
         }
       } else if (row.kind === 'cfg') {
@@ -618,6 +630,34 @@ function openModal(title, build) {
 }
 function closeModal() { document.getElementById('modal').classList.remove('on'); }
 
+/* ---- Свои блюда ----
+   Записанное своими словами живёт не только внутри дня, иначе через неделю
+   вводить заново. Синхронизируется отдельным kind = 'custom'. */
+function customList() { return (S.custom || []).filter(c => !c.deleted); }
+function saveCustom(n, p) {
+  S.custom = S.custom || [];
+  const key = norm(n);
+  let c = S.custom.find(x => !x.deleted && norm(x.n) === key);
+  if (c) {
+    if (p && c.p !== p) { c.p = p; c.u = Date.now(); saveLocal('custom:' + c.id); }
+    return c;
+  }
+  c = { id: mealId(), n: n, p: p || 0, u: Date.now() };
+  S.custom.push(c);
+  saveLocal('custom:' + c.id);
+  return c;
+}
+function delCustom(id) {
+  const c = (S.custom || []).find(x => x.id === id);
+  if (!c) return;
+  c.deleted = true; c.u = Date.now();          // тумбстоун, чтобы удаление доехало
+  saveLocal('custom:' + id);
+}
+function filterCustom(q) {
+  const nq = norm(q).trim();
+  return customList().filter(c => !nq || nq.split(/\s+/).every(w => norm(c.n).includes(w)));
+}
+
 /* Что человек добавляет чаще всего за последние 30 дней.
    Блюда из меню считаем по rid, записанные своими словами — по названию. */
 function frequentMeals(limit) {
@@ -669,14 +709,36 @@ function mealPicker() {
     own.querySelector('#ownAdd').onclick = () => {
       const t = own.querySelector('#ownName').value.trim();
       if (!t) { toast('Напиши, что ел'); return; }
-      addMeal(null, t, Math.round(num(own.querySelector('#ownProt').value) || 0));
+      const prot = Math.round(num(own.querySelector('#ownProt').value) || 0);
+      saveCustom(t, prot);                     // на следующей неделе будет в «Моих блюдах»
+      addMeal(null, t, prot);
       closeModal(); toast('Добавлено');
     };
     const list = document.createElement('div'); box.appendChild(list);
     const draw = q => {
       list.innerHTML = '';
+      const mine = filterCustom(q);
+      if (mine.length) {
+        const h = document.createElement('div'); h.className = 'pickhd'; h.textContent = 'Мои блюда';
+        list.appendChild(h);
+        mine.forEach(c => {
+          const el = document.createElement('div'); el.className = 'pick mine';
+          el.innerHTML = '<div><div class="nm"></div><div class="sub">своё блюдо</div></div>'
+            + '<div class="meta">'+(c.p ? c.p+' г' : '—')+'</div>'
+            + '<button class="mx" aria-label="Убрать из моих">×</button>';
+          el.querySelector('.nm').textContent = c.n;
+          el.onclick = () => { addMeal(null, c.n, c.p); closeModal(); toast('Добавлено'); };
+          el.querySelector('.mx').onclick = e => { e.stopPropagation(); delCustom(c.id); draw(q); toast('Убрано из моих'); };
+          list.appendChild(el);
+        });
+        const h2 = document.createElement('div'); h2.className = 'pickhd'; h2.style.marginTop = 'var(--s4)'; h2.textContent = 'Из меню';
+        list.appendChild(h2);
+      }
       const res = filterRecipes(q, null).slice(0, 60);
-      if (!res.length) { list.innerHTML = '<div class="empty">Ничего не нашлось. Запиши своими словами.</div>'; return; }
+      if (!res.length) {
+        if (!mine.length) list.innerHTML = '<div class="empty">Ничего не нашлось. Запиши своими словами.</div>';
+        return;
+      }
       res.forEach(r => {
         const el = document.createElement('div'); el.className = 'pick';
         el.innerHTML = '<div><div class="nm"></div><div class="sub">'+r.c+(r.s?' · '+r.s:'')+'</div></div><div class="meta">'+r.p+' г · '+r.t+' мин</div>';
@@ -1050,6 +1112,7 @@ function renderSync() {
       if (!confirm('Отправить все записи с этого устройства на сервер? Серверные версии этих дней будут заменены.')) return;
       Object.keys(S.days).filter(hasData).forEach(k => { S.days[k].u = Date.now(); });
       S.waist.forEach(w => { w.u = Date.now(); });
+      (S.custom || []).forEach(c => { c.u = Date.now(); });
       S.cfg.u = Date.now();
       pushEverything(); store.set(LS, JSON.stringify(S));
       await syncNow(); toast('Отправлено');
@@ -1168,7 +1231,8 @@ function bind() {
         const j = JSON.parse(r.result);
         if (!j.days) throw new Error();
         if (!confirm('Заменить текущие записи содержимым файла?')) return;
-        S = { days: j.days || {}, waist: j.waist || [], cfg: Object.assign({}, DEF_CFG, j.cfg || {}) };
+        S = { days: j.days || {}, waist: j.waist || [], custom: j.custom || [],
+              cfg: Object.assign({}, DEF_CFG, j.cfg || {}) };
         pushEverything();
         saveLocal(); renderAll(); fillSettings(); toast('Загружено');
       } catch (err) { toast('Файл не подошёл'); }
@@ -1180,7 +1244,8 @@ function bind() {
     if (!confirm('Удалить все записи на этом устройстве? Отменить будет нельзя.')) return;
     Object.keys(S.days).filter(hasData).forEach(k => dirty.add('day:'+k));
     S.waist.forEach(w => dirty.add('waist:'+w.d));
-    S = { days:{}, waist:[], cfg:Object.assign({}, DEF_CFG) };
+    (S.custom || []).forEach(c => dirty.add('custom:'+c.id));
+    S = { days:{}, waist:[], custom:[], cfg:Object.assign({}, DEF_CFG) };
     store.set(LS_DIRTY, JSON.stringify([...dirty]));
     saveLocal(); renderAll(); toast('Удалено');
   };
