@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 
-const APP_VERSION = 'v4';   // видно в «Ещё → Данные», чтобы проверить, какая версия загрузилась
+const APP_VERSION = 'v5';   // видно в «Ещё → Данные», чтобы проверить, какая версия загрузилась
 
 /* ============ 1. Утилиты дат ============ */
 const DOW = ['вс','пн','вт','ср','чт','пт','сб'];
@@ -45,6 +45,11 @@ function loadLocal() {
   if (!S.days) S.days = {};
   if (!S.waist) S.waist = [];
   S.cfg = Object.assign({}, DEF_CFG, S.cfg || {});
+  // Записи, сделанные до появления слияния, получают идентификаторы приёмов пищи.
+  Object.keys(S.days).forEach(k => {
+    const d = S.days[k];
+    (d.meals || []).forEach(m => { if (!m.id || m.id === null) m.id = mealId(); if (!m.u) m.u = d.u || Date.now(); });
+  });
   try { dirty = new Set(JSON.parse(store.get(LS_DIRTY) || '[]')); } catch (e) { dirty = new Set(); }
 }
 let saveT = null;
@@ -57,10 +62,19 @@ function saveLocal(mark) {
   }, 250);
 }
 function day(k) { if (!S.days[k]) S.days[k] = {}; return S.days[k]; }
-function touch(k) { day(k).u = Date.now(); saveLocal('day:'+k); }
+const META = ['u','uf','mdel','deleted'];
+// field — имя изменённого поля. Без него слияние между устройствами невозможно:
+// нужно знать, какое поле новее, а не какой день целиком.
+function touch(k, field) {
+  const d = day(k);
+  d.u = Date.now();
+  if (field) { d.uf = d.uf || {}; d.uf[field] = d.u; }
+  saveLocal('day:'+k);
+}
+function mealId() { return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function hasData(k) {
   const d = S.days[k]; if (!d) return false;
-  return Object.keys(d).some(f => !['u','type'].includes(f) && d[f]!=='' && d[f]!=null && d[f]!==false &&
+  return Object.keys(d).some(f => !META.concat(['type']).includes(f) && d[f]!=='' && d[f]!=null && d[f]!==false &&
     !(Array.isArray(d[f]) && d[f].length===0) && !(typeof d[f]==='object' && !Array.isArray(d[f]) && Object.keys(d[f]).length===0));
 }
 function typeOf(k) {
@@ -76,6 +90,54 @@ function iceTime(k) {
   const t = typeOf(k);
   if (t === 'game') return null;              // время игры плавает, берётся только из дня
   return S.cfg.ice[String(parse(k).getDay())] || null;
+}
+
+/* ---- Слияние двух версий одного дня, поле за полем ---- */
+function present(d, f) {
+  if (!d || !(f in d)) return false;
+  const v = d[f];
+  return v !== '' && v != null && v !== false;
+}
+function ts(d, f) {
+  if (!d) return -1;
+  if (d.uf && d.uf[f] != null) return d.uf[f];
+  return present(d, f) ? (d.u || 0) : -1;   // старый формат без меток
+}
+function mergeDay(local, remote) {
+  if (!local) return remote;
+  if (!remote) return local;
+  const out = {}, uf = {}, plain = new Set();
+  [local, remote].forEach(o => Object.keys(o).forEach(f => {
+    if (!META.includes(f) && f !== 'meals' && f !== 'checks') plain.add(f);
+  }));
+  plain.forEach(f => {
+    const tl = ts(local, f), tr = ts(remote, f);
+    const win = tr > tl ? remote : local;                  // при равенстве оставляем местное
+    if (f in win) { out[f] = win[f]; uf[f] = Math.max(tl, tr, 0); }
+  });
+  const ck = {}, keys = new Set([].concat(Object.keys(local.checks||{}), Object.keys(remote.checks||{})));
+  keys.forEach(key => {
+    const f = 'checks.' + key, tl = ts(local, f), tr = ts(remote, f);
+    const win = tr > tl ? remote : local;
+    if (win.checks && key in win.checks) { ck[key] = win.checks[key]; uf[f] = Math.max(tl, tr, 0); }
+  });
+  if (Object.keys(ck).length) out.checks = ck;
+  const mdel = Object.assign({}, local.mdel || {});
+  Object.keys(remote.mdel || {}).forEach(id => { mdel[id] = Math.max(mdel[id] || 0, remote.mdel[id]); });
+  const byId = {};
+  [local, remote].forEach(o => (o.meals || []).forEach(m => {
+    if (!m.id) m.id = mealId();
+    const cur = byId[m.id];
+    if (!cur || (m.u || 0) > (cur.u || 0)) byId[m.id] = m;
+  }));
+  out.meals = Object.keys(byId)
+    .filter(id => !(mdel[id] != null && mdel[id] >= (byId[id].u || 0)))
+    .map(id => byId[id])
+    .sort((a,b) => (a.t||'').localeCompare(b.t||''));
+  if (Object.keys(mdel).length) out.mdel = mdel;
+  out.uf = uf;
+  out.u = Math.max(local.u || 0, remote.u || 0);
+  return out;
 }
 
 /* ============ 3. Синхронизация с Supabase ============ */
@@ -190,7 +252,15 @@ async function syncNow(silent) {
       const p = row.payload || {};
       if (row.kind === 'day') {
         const cur = S.days[row.key];
-        if (!cur || (p.u || 0) > (cur.u || 0)) { if (p.deleted) delete S.days[row.key]; else S.days[row.key] = p; changed = true; }
+        if (p.deleted) {
+          if (cur && (p.u || 0) >= (cur.u || 0)) { delete S.days[row.key]; changed = true; }
+        } else {
+          const merged = mergeDay(cur, p);
+          if (JSON.stringify(merged) !== JSON.stringify(cur)) {
+            S.days[row.key] = merged; changed = true;
+            dirty.add('day:' + row.key);          // результат слияния вернём на сервер
+          }
+        }
       } else if (row.kind === 'waist') {
         const i = S.waist.findIndex(w => w.d === row.key);
         const cur = i >= 0 ? S.waist[i] : null;
@@ -204,12 +274,14 @@ async function syncNow(silent) {
       }
     });
     store.set(LS_PULL, newest);
+    if (dirty.size) store.set(LS_DIRTY, JSON.stringify([...dirty]));
     if (changed) {
       S.waist.sort((a,b) => a.d < b.d ? 1 : -1);
       store.set(LS, JSON.stringify(S));
       renderAll();
       if (!silent) toast('Обновлено с другого устройства');
     }
+    if (dirty.size) { syncing = false; return syncNow(true); }   // отдать результат слияния
     badge('синхронизировано','ok');
   } catch (e) {
     badge(authBroken ? 'нужен вход' : 'не синхронизировано','err');
@@ -347,7 +419,7 @@ function renderDay() {
     l.innerHTML = '<input type="checkbox"><span>'+label+(hint?'<small>'+hint+'</small>':'')+'</span>';
     const inp = l.querySelector('input');
     inp.checked = !!(d.checks && d.checks[key]);
-    inp.onchange = () => { d.checks = d.checks || {}; d.checks[key] = inp.checked; touch(k); renderWeek(); updateRulesAside(k); };
+    inp.onchange = () => { d.checks = d.checks || {}; d.checks[key] = inp.checked; touch(k, 'checks.'+key); renderWeek(); updateRulesAside(k); };
     rw.appendChild(l);
   });
   updateRulesAside(k);
@@ -357,8 +429,8 @@ function renderDay() {
 
   // лёд
   document.getElementById('iceCard').style.display = (t==='ice'||t==='game') ? '' : 'none';
-  rate('rateP3', d.p3, v => { d.p3 = v; touch(k); renderDay(); });
-  rate('rateFeel', d.feel, v => { d.feel = v; touch(k); renderDay(); });
+  rate('rateP3', d.p3, v => { d.p3 = v; touch(k, 'p3'); renderDay(); });
+  rate('rateFeel', d.feel, v => { d.feel = v; touch(k, 'feel'); renderDay(); });
 
   document.getElementById('whoopCard').style.display = S.cfg.whoop ? '' : 'none';
   document.getElementById('kcalCard').style.display = S.cfg.kcal ? '' : 'none';
@@ -396,8 +468,12 @@ function renderMeals(k) {
       + '<div class="mp">'+(m.p ? m.p+' г' : '')+'</div>'
       + '<button class="mx" aria-label="Убрать">×</button>';
     row.querySelector('.mn').textContent = m.n || '';
-    row.querySelector('input').onchange = e => { m.t = e.target.value; touch(k); renderMeals(k); renderTimeline(k); };
-    row.querySelector('.mx').onclick = () => { meals.splice(i,1); touch(k); renderMeals(k); renderTimeline(k); renderWeek(); };
+    row.querySelector('input').onchange = e => { m.t = e.target.value; m.u = Date.now(); touch(k); renderMeals(k); renderTimeline(k); };
+    row.querySelector('.mx').onclick = () => {
+      d.mdel = d.mdel || {};
+      if (m.id) d.mdel[m.id] = Date.now();      // чтобы удаление доехало до второго устройства
+      meals.splice(i,1); touch(k); renderMeals(k); renderTimeline(k); renderWeek();
+    };
     wrap.appendChild(row);
   });
   const tot = meals.reduce((s,m) => s + (m.p||0), 0);
@@ -407,8 +483,9 @@ function addMeal(recipe, name, prot) {
   const d = day(sel);
   d.meals = d.meals || [];
   const now = new Date();
-  d.meals.push({ t: String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'),
-                 id: recipe ? recipe.id : null, n: name, p: prot || 0 });
+  d.meals.push({ id: mealId(), rid: recipe ? recipe.id : null, u: Date.now(),
+                 t: String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0'),
+                 n: name, p: prot || 0 });
   touch(sel); renderMeals(sel); renderTimeline(sel); renderWeek();
 }
 
@@ -855,9 +932,9 @@ function bind() {
     const isNum = el.classList.contains('num') || el.type === 'number';
     const write = () => {
       const d = day(sel);
-      if (f === 'type') { d.type = el.value; touch(sel); renderAll(); return true; }
+      if (f === 'type') { d.type = el.value; touch(sel, 'type'); renderAll(); return true; }
       d[f] = isNum ? dec(el.value) : el.value;
-      touch(sel);
+      touch(sel, f);
       return false;
     };
     el.addEventListener('input', () => { if (!write()) renderWeek(); });
@@ -975,6 +1052,7 @@ function fillSettings() {
   document.getElementById('rFrom').value = addDays(t, -6);
   renderAll();
   refreshReport();
+  if (store.get('rink-gen') !== '2') { store.del(LS_PULL); store.set('rink-gen', '2'); }
   if (AUTH && AUTH.access) { badge('синхронизировано','ok'); syncNow(true); }
   if ('serviceWorker' in navigator) {
     let reloaded = false;
