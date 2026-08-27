@@ -69,6 +69,7 @@ h1,h2,h3{margin:0;font-family:var(--display);font-weight:600;letter-spacing:.01e
 .coach{border-left:3px solid var(--amber);background:var(--panel2);border-radius:0 12px 12px 0;padding:11px 14px;margin-bottom:12px}
 .coach .lbl{font-family:var(--display);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin-bottom:3px}
 .coach p{margin:0;font-size:13.5px;color:#C6D4E0;line-height:1.45}
+.coach p.live{font-family:var(--mono);font-size:13.5px;color:var(--amber);margin-bottom:6px}
 
 /* ---------- лента дня ---------- */
 .tl{margin-bottom:12px}
@@ -239,6 +240,7 @@ mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:
 
     <div class="coach" id="coach">
       <div class="lbl" id="coachLbl">День</div>
+      <p class="live" id="coachNow" style="display:none"></p>
       <p id="coachTxt"></p>
     </div>
 

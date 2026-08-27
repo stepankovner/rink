@@ -352,6 +352,31 @@ function coachFor(k) {
   return { lbl:'День дефицита', tx:'Белок в каждый приём, овощи в обед и ужин, углеводов одна горсть. Плюс 30–40 минут ходьбы: сидячий день — единственная реальная дыра в неделе.' };
 }
 
+/* ---- Обратный отсчёт до льда ----
+   Смысл подсказки в том, чтобы на неё смотрели днём, а не читали один раз утром. */
+function countdownText(k, nowMin) {
+  const t = typeOf(k), tm = iceTime(k);
+  if (k !== todayKey() || (t !== 'ice' && t !== 'game') || !tm) return '';
+  const nrm = m => m < 240 ? m + 1440 : m;
+  const left = nrm(toMin(tm)) - nrm(nowMin);
+  const word = t === 'game' ? 'игры' : 'льда';
+  if (left <= 0) return (t === 'game' ? 'Игра началась' : 'Лёд начался')
+    + '. После него обязательно поешь: творог, кефир или протеин.';
+  if (left <= 180) return 'До ' + word + ' ' + hm(left)
+    + '. Плотно есть уже поздно. Если голодно — банан или хлеб с мёдом, без жира.';
+  return 'До ' + word + ' ' + hm(left) + '. Плотно есть можно ещё ' + hm(left - 180) + '.';
+}
+let cdT = null;
+function renderCountdown() {
+  const el = document.getElementById('coachNow');
+  if (!el) return;
+  const n = new Date();
+  const tx = countdownText(sel, n.getHours()*60 + n.getMinutes());
+  el.textContent = tx;
+  el.style.display = tx ? '' : 'none';
+  if (!cdT) cdT = setInterval(renderCountdown, 60000);   // пересчёт раз в минуту
+}
+
 /* ============ 7. Лента дня ============ */
 /* Цвета продублированы литералами: значения из :root в SVG-атрибуты не подставить. */
 const TL = { axis:'#26333F', hour:'#6B7F90', sleep:'#1F2C38', sleepLine:'#8094A6',
@@ -537,6 +562,7 @@ function renderDay() {
   const c = coachFor(k);
   document.getElementById('coachLbl').textContent = fmtLong(k) + ' · ' + c.lbl;
   document.getElementById('coachTxt').textContent = c.tx;
+  renderCountdown();
 
   // сон
   const bm = toMin(d.bed), wm = toMin(d.wake);
