@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 
-const APP_VERSION = 'v5';   // видно в «Ещё → Данные», чтобы проверить, какая версия загрузилась
+const APP_VERSION = 'v6';   // видно в «Ещё → Данные», чтобы проверить, какая версия загрузилась
 
 /* ============ 1. Утилиты дат ============ */
 const DOW = ['вс','пн','вт','ср','чт','пт','сб'];
@@ -359,10 +359,18 @@ function renderTimeline(k) {
     s += '<rect x="'+x(iceA)+'" y="'+(Y-6)+'" width="'+Math.max(4,(x(iceB)-x(iceA)))+'" height="12" rx="3" fill="#E23B4C"/>'
       +  '<text x="'+x(iceA)+'" y="'+(Y-13)+'" fill="#E23B4C" font-size="9.5" font-family="ui-monospace,monospace">'+(t==='game'?'игра':'лёд')+'</text>';
   }
-  if (d.wake) { const px = x(norm(toMin(d.wake)));
-    s += '<line x1="'+px+'" y1="'+(Y-14)+'" x2="'+px+'" y2="'+(Y+8)+'" stroke="#8094A6" stroke-width="1.5" stroke-dasharray="2 2"/>'; }
-  if (d.bed)  { const px = x(norm(toMin(d.bed)));
-    s += '<line x1="'+px+'" y1="'+(Y-14)+'" x2="'+px+'" y2="'+(Y+8)+'" stroke="#8094A6" stroke-width="1.5" stroke-dasharray="2 2"/>'; }
+  if (d.wake) {
+    const px = x(norm(toMin(d.wake)));
+    // Сон относится к ночи, которая закончилась этим утром: рисуем его слева, до подъёма.
+    s += '<rect x="'+L+'" y="'+(Y-6)+'" width="'+Math.max(0,(px-L))+'" height="12" rx="3" fill="#1F2C38"/>'
+      +  '<line x1="'+px+'" y1="'+(Y-11)+'" x2="'+px+'" y2="'+(Y+11)+'" stroke="#8094A6" stroke-width="1.5"/>';
+    let lab = 'сон';
+    const bm2 = toMin(d.bed);
+    if (bm2 != null) { let mm = toMin(d.wake) - bm2; if (mm <= 0) mm += 1440; lab = (mm/60).toFixed(1).replace('.',',') + ' ч'; }
+    // Если полоса узкая (встал рано), подпись уезжает правее метки, а не пропадает.
+    const wide = (px - L) > 40;
+    s += '<text x="'+(wide ? L+5 : px+5)+'" y="'+(wide ? Y+4 : Y-13)+'" fill="#8094A6" font-size="9" font-family="ui-monospace,monospace">'+lab+'</text>';
+  }
 
   (d.meals || []).forEach(m => {
     if (!m.t) return;
@@ -407,7 +415,7 @@ function renderDay() {
 
   // сон
   const bm = toMin(d.bed), wm = toMin(d.wake);
-  let sleepTxt = '';
+  let sleepTxt = 'ночь перед этим утром';
   if (bm != null && wm != null) { let m = wm - bm; if (m <= 0) m += 1440; sleepTxt = 'сон ' + hm(m); }
   document.getElementById('sleepAside').textContent = sleepTxt;
 
