@@ -618,13 +618,49 @@ function openModal(title, build) {
 }
 function closeModal() { document.getElementById('modal').classList.remove('on'); }
 
+/* Что человек добавляет чаще всего за последние 30 дней.
+   Блюда из меню считаем по rid, записанные своими словами — по названию. */
+function frequentMeals(limit) {
+  const to = todayKey(), from = addDays(to, -29), by = {};
+  Object.keys(S.days).forEach(k => {
+    if (k < from || k > to) return;
+    (S.days[k].meals || []).forEach(m => {
+      if (!m.n) return;
+      const id = m.rid ? 'r:' + m.rid : 'n:' + norm(m.n);
+      const cur = by[id] || (by[id] = { n:m.n, p:m.p || 0, rid:m.rid || null, c:0 });
+      cur.c++; cur.n = m.n;
+      if (m.p) cur.p = m.p;
+    });
+  });
+  return Object.keys(by).map(id => by[id])
+    .sort((a, b) => b.c - a.c || a.n.localeCompare(b.n))
+    .slice(0, limit || 6);
+}
+
 function mealPicker() {
   openModal('Что ел', box => {
+    // «Часто» — сверху: человек ест одно и то же, листать 104 блюда каждый раз незачем.
+    const freq = frequentMeals(6);
+    if (freq.length) {
+      const f = document.createElement('div');
+      f.className = 'freq';
+      f.innerHTML = '<div class="pickhd">Часто</div><div class="chips"></div>';
+      const row = f.querySelector('.chips');
+      freq.forEach(it => {
+        const b = document.createElement('button');
+        b.className = 'chip freqchip';
+        b.textContent = it.n + (it.p ? ' · ' + it.p + ' г' : '');
+        b.onclick = () => { addMeal(it.rid ? { id:it.rid } : null, it.n, it.p); closeModal(); toast('Добавлено'); };
+        row.appendChild(b);
+      });
+      box.appendChild(f);
+    }
+
     const s = document.createElement('div'); s.className = 'search';
     s.innerHTML = '<input type="text" placeholder="Найти блюдо">';
     box.appendChild(s);
     const own = document.createElement('div');
-    own.innerHTML = '<div class="grid2" style="margin-bottom:9px">'
+    own.innerHTML = '<div class="grid2" style="margin-bottom:var(--s2)">'
       + '<div class="f" style="grid-column:1 / -1"><span>Или своими словами</span><input type="text" id="ownName" placeholder="Например, шаурма"></div>'
       + '<div class="f"><span>Белок, г</span><input type="text" inputmode="numeric" class="num" id="ownProt" placeholder="можно пропустить"></div>'
       + '<div class="f" style="align-self:end"><button class="btn" id="ownAdd" style="width:100%">Записать</button></div>'

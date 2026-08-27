@@ -19,6 +19,7 @@
   --display:"Avenir Next Condensed","HelveticaNeue-CondensedBold","Arial Narrow",system-ui,sans-serif;
   --body:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
   --safe-b:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -182,6 +183,10 @@ mark{background:rgba(59,125,224,.35);color:var(--ice);border-radius:3px;padding:
 .pick .nm{font-size:14.5px}
 .pick .sub{font-size:11.5px;color:var(--dim);margin-top:2px}
 .pick .meta{font-family:var(--mono);font-size:11px;color:var(--muted);flex:0 0 auto}
+.pickhd{font-family:var(--display);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.freq{margin-bottom:12px}
+.freq .chips{flex-wrap:wrap;overflow:visible;padding-bottom:0;margin-bottom:0}
+.chip.freqchip{background:var(--panel2);border-color:var(--edge2);color:var(--ice);font-size:13.5px;margin-bottom:7px}
 
 /* ---------- графики ---------- */
 .chart{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:14px 15px 10px;margin-bottom:12px}
